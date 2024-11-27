@@ -54,7 +54,7 @@ def main():
 
                 parts = data.split(b"\x00")
                 _type, _size = parts[0].decode().split(" ")
-                _content = b''.join(parts[1:]).decode()
+                _content = b''.join(parts[1:])
                 print(_content)
 
                 for line in _content.split("\n"):
