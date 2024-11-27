@@ -52,9 +52,9 @@ def main():
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
-                parts = data.split(b"\x00")
+                parts = data.split(b'\x00'')
                 _type, _size = parts[0].decode().split(" ")
-                _content = b''.join(parts[1:])
+                _content = b'\x00'.join(parts[1:])
                 print(_content)
 
                 for line in _content.split("\n"):
