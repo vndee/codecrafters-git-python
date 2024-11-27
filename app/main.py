@@ -24,6 +24,7 @@ def main():
             _type, _size = data.split(b"\x00", 2)[0].split(" ")
             _content = data.split(b"\x00", 2)[1]
 
+            print(f"type: {_type}, size: {_size}, content: {_content}")
             if sub_command == "-p":
                 print(data)
     else:
