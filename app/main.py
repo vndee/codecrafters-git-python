@@ -52,10 +52,10 @@ def main():
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
-                parts = data.split(b"\x00")[0]
-                print(parts.decode())
+                parts = data.split(b"\x00")
                 _type, _size = parts[0].decode().split(" ")
-                _content = parts[1].decode()
+                _content = b''.join(parts[1:]).decode()
+                print(_content)
 
                 for line in _content.split("\n"):
                     if not line:
