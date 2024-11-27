@@ -1,6 +1,7 @@
 import sys
 import os
 import zlib
+import hashlib
 
 
 def main():
@@ -27,6 +28,24 @@ def main():
 
             if sub_command == "-p":
                 print(_content, end="")
+
+    elif command == "hash-object":
+        if sys.argv[2] == "-w":
+            if sys.argv[3] == "--stdin":
+                data = sys.stdin.buffer.read()
+            else:
+                with open(sys.argv[3], "rb") as f:
+                    data = f.read()
+
+            header = f"blob {len(data)}\x00"
+            store = header.encode() + data
+            sha = hashlib.sha1(store).hexdigest()
+            os.makedirs(f".git/objects/{sha[:2]}", exist_ok=True)
+            with open(f".git/objects/{sha[:2]}/{sha[2:]}", "wb") as f:
+                f.write(zlib.compress(store))
+
+            print(sha)
+
     else:
         raise RuntimeError(f"Unknown command #{command}")
 
