@@ -91,6 +91,23 @@ def main():
                     print(f"{mode.decode().zfill(6)} {entry_type} {sha_hex}    {name.decode()}")
                     pos = null_pos + 1 + 20
 
+    elif command == "write-tree":
+        tree = b""
+        for line in sys.stdin:
+            mode, name, sha = line.split()
+            mode = mode.encode()
+            name = name.encode()
+            sha = bytes.fromhex(sha)
+
+            tree += mode + b" " + name + b"\x00" + sha
+
+        sha = hashlib.sha1(tree).hexdigest()
+        os.makedirs(f".git/objects/{sha[:2]}", exist_ok=True)
+        with open(f".git/objects/{sha[:2]}/{sha[2:]}", "wb") as f:
+            f.write(zlib.compress(b"tree " + tree))
+
+        print(sha)
+
     else:
         raise RuntimeError(f"Unknown command #{command}")
 
