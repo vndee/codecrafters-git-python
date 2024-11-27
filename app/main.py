@@ -97,8 +97,7 @@ def create_commit(tree_sha: str, parent_sha: str, message: str) -> str:
         f"author {author} {timestamp} {timezone}",
         f"committer {committer} {timestamp} {timezone}",
         "",  # Empty line before message
-        message,
-        "\n"  # End with newline
+        message
     ]
 
     # Join with Unix-style newlines
