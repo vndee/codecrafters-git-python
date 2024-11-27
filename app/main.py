@@ -21,8 +21,11 @@ def main():
         with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
             data = zlib.decompress(f.read())
 
-        if sub_command == "-p":
-            print(data)
+            _type, _size = data.split(b"\x00", 2)[0].split(" ")
+            _content = data.split(b"\x00", 2)[1]
+
+            if sub_command == "-p":
+                print(data)
     else:
         raise RuntimeError(f"Unknown command #{command}")
 
