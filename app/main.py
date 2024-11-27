@@ -55,13 +55,12 @@ def main():
                 parts = data.split(b'\x00')
                 _type, _size = parts[0].decode().split(" ")
                 _content = b'\x00'.join(parts[1:])
-                print(_content.decode())
 
-                for line in _content.split("\n"):
+                for line in _content.split(b"\n"):
                     if not line:
                         continue
-                    mode, type, sha, name = line.split("\t")
-                    print(name)
+                    mode, type, sha, name = line.split(b"\t")
+                    print(name.decode())
         else:
             sha = sys.argv[2]
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
