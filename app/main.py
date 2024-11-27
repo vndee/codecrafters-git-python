@@ -57,6 +57,7 @@ def main():
                 _content = b'\x00'.join(parts[1:])
 
                 for line in _content.split(b"\n"):
+                    print(f"L: {line}")
                     if not line:
                         continue
                     mode, type, sha, name = line.split(b"\t")
