@@ -25,7 +25,6 @@ def main():
             _type, _size = parts[0].decode().split(" ")
             _content = parts[-1].decode()
 
-            print(f"type: {_type}, size: {_size}, content: {_content}")
             if sub_command == "-p":
                 print(_content)
     else:
