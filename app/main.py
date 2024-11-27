@@ -101,7 +101,7 @@ def create_commit(tree_sha: str, parent_sha: str, message: str) -> str:
     ]
 
     # Join with Unix-style newlines
-    commit_data = "\n".join(content).encode()
+    commit_data = ("\n".join(content) + "\n").encode()
 
     # Hash and store the commit object
     return hash_object(commit_data, "commit")
