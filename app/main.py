@@ -52,30 +52,54 @@ def main():
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
-                parts = data.split(b'\x00')
-                _type, _size = parts[0].decode().split(" ")
-                _content = b'\x00'.join(parts[1:])
+                # Split header from content
+                header_end = data.index(b'\x00')
+                header = data[:header_end]
+                content = data[header_end + 1:]
 
-                for line in _content.split(b"\n"):
-                    print(f"L: {line}")
-                    if not line:
-                        continue
-                    mode, type, sha, name = line.split(b"\t")
-                    print(name.decode())
+                # Process each entry
+                pos = 0
+                entries = []
+                while pos < len(content):
+                    # Find the end of the mode+name portion (marked by null byte)
+                    null_pos = content.index(b'\x00', pos)
+
+                    # Extract mode and name
+                    mode_name = content[pos:null_pos]
+                    mode, name = mode_name.split(b' ', 1)
+
+                    # Skip past the SHA (20 bytes) and prepare for next entry
+                    pos = null_pos + 1 + 20
+
+                    entries.append(name.decode())
+
+                # Print entries (they're already sorted in the tree object)
+                for entry in entries:
+                    print(entry)
         else:
             sha = sys.argv[2]
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
-                parts = data.split(b"\x00", 2)
-                _type, _size = parts[0].decode().split(" ")
-                _content = parts[-1].decode()
+                # Similar parsing logic but print full details
+                header_end = data.index(b'\x00')
+                content = data[header_end + 1:]
 
-                for line in _content.split("\n"):
-                    if not line:
-                        continue
-                    mode, type, sha, name = line.split("\t")
-                    print(f"{mode} {type} {sha} {name}")
+                pos = 0
+                while pos < len(content):
+                    null_pos = content.index(b'\x00', pos)
+                    mode_name = content[pos:null_pos]
+                    mode, name = mode_name.split(b' ', 1)
+
+                    # Get the SHA and convert to hex
+                    sha_bytes = content[null_pos + 1:null_pos + 21]
+                    sha_hex = sha_bytes.hex()
+
+                    # Determine if it's a tree or blob based on mode
+                    entry_type = "tree" if mode == b"40000" else "blob"
+
+                    print(f"{mode.decode().zfill(6)} {entry_type} {sha_hex}    {name.decode()}")
+                    pos = null_pos + 1 + 20
 
     else:
         raise RuntimeError(f"Unknown command #{command}")
