@@ -46,6 +46,36 @@ def main():
 
             print(sha)
 
+    elif command == "ls-tree":
+        if sys.argv[2] == "--name-only":
+            sha = sys.argv[3]
+            with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
+                data = zlib.decompress(f.read())
+
+                parts = data.split(b"\x00", 2)
+                _type, _size = parts[0].decode().split(" ")
+                _content = parts[-1].decode()
+
+                for line in _content.split("\n"):
+                    if not line:
+                        continue
+                    mode, type, sha, name = line.split("\t")
+                    print(name)
+        else:
+            sha = sys.argv[2]
+            with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
+                data = zlib.decompress(f.read())
+
+                parts = data.split(b"\x00", 2)
+                _type, _size = parts[0].decode().split(" ")
+                _content = parts[-1].decode()
+
+                for line in _content.split("\n"):
+                    if not line:
+                        continue
+                    mode, type, sha, name = line.split("\t")
+                    print(f"{mode} {type} {sha} {name}")
+
     else:
         raise RuntimeError(f"Unknown command #{command}")
 
