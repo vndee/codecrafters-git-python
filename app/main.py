@@ -2,6 +2,77 @@ import sys
 import os
 import zlib
 import hashlib
+from typing import List, Tuple
+
+
+def hash_object(data: bytes, obj_type: str) -> str:
+    """
+    Hash an object and store it in the objects directory.
+    Returns the SHA1 hash of the object.
+    """
+    # Prepare the object store data with header
+    store = f"{obj_type} {len(data)}\x00".encode() + data
+
+    # Calculate SHA1 hash
+    sha = hashlib.sha1(store).hexdigest()
+
+    # Store the object
+    path = f".git/objects/{sha[:2]}"
+    os.makedirs(path, exist_ok=True)
+    with open(f"{path}/{sha[2:]}", "wb") as f:
+        f.write(zlib.compress(store))
+
+    return sha
+
+
+def create_tree_entry(mode: str, name: str, sha: str) -> bytes:
+    """Create a single tree entry in the correct format."""
+    # Convert the hex SHA to bytes
+    sha_bytes = bytes.fromhex(sha)
+    return f"{mode} {name}\x00".encode() + sha_bytes
+
+
+def write_tree_recursive(directory: str) -> str:
+    """
+    Recursively create tree objects for a directory and its subdirectories.
+    Returns the SHA1 hash of the tree object.
+    """
+    entries: List[Tuple[str, str, str]] = []  # List of (mode, name, sha)
+
+    # Iterate through directory entries in sorted order
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+
+        # Skip .git directory
+        if name == '.git':
+            continue
+
+        # Get file stats
+        stats = os.lstat(path)
+
+        if os.path.isfile(path):
+            # Regular file
+            mode = "100644"
+            if stats.st_mode & 0o111:  # Check if executable
+                mode = "100755"
+
+            # Hash the file content
+            with open(path, 'rb') as f:
+                file_sha = hash_object(f.read(), "blob")
+            entries.append((mode, name, file_sha))
+
+        elif os.path.isdir(path):
+            # Directory - recursively create tree
+            tree_sha = write_tree_recursive(path)
+            entries.append(("40000", name, tree_sha))
+
+    # Create tree content
+    tree_content = b""
+    for mode, name, sha in entries:
+        tree_content += create_tree_entry(mode, name, sha)
+
+    # Hash and store the tree object
+    return hash_object(tree_content, "tree")
 
 
 def main():
@@ -37,14 +108,7 @@ def main():
                 with open(sys.argv[3], "rb") as f:
                     data = f.read()
 
-            header = f"blob {len(data)}\x00"
-            store = header.encode() + data
-            sha = hashlib.sha1(store).hexdigest()
-            os.makedirs(f".git/objects/{sha[:2]}", exist_ok=True)
-            with open(f".git/objects/{sha[:2]}/{sha[2:]}", "wb") as f:
-                f.write(zlib.compress(store))
-
-            print(sha)
+            print(hash_object(data, "blob"))
 
     elif command == "ls-tree":
         if sys.argv[2] == "--name-only":
@@ -52,61 +116,34 @@ def main():
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
+                # Split header from content
                 header_end = data.index(b'\x00')
-                header = data[:header_end]
                 content = data[header_end + 1:]
 
+                # Process each entry
                 pos = 0
                 entries = []
                 while pos < len(content):
+                    # Find the end of the mode+name portion (marked by null byte)
                     null_pos = content.index(b'\x00', pos)
 
+                    # Extract mode and name
                     mode_name = content[pos:null_pos]
                     mode, name = mode_name.split(b' ', 1)
 
+                    # Skip past the SHA (20 bytes) and prepare for next entry
                     pos = null_pos + 1 + 20
+
                     entries.append(name.decode())
 
+                # Print entries (they're already sorted in the tree object)
                 for entry in entries:
                     print(entry)
-        else:
-            sha = sys.argv[2]
-            with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
-                data = zlib.decompress(f.read())
-
-                header_end = data.index(b'\x00')
-                content = data[header_end + 1:]
-
-                pos = 0
-                while pos < len(content):
-                    null_pos = content.index(b'\x00', pos)
-                    mode_name = content[pos:null_pos]
-                    mode, name = mode_name.split(b' ', 1)
-
-                    sha_bytes = content[null_pos + 1:null_pos + 21]
-                    sha_hex = sha_bytes.hex()
-
-                    entry_type = "tree" if mode == b"40000" else "blob"
-
-                    print(f"{mode.decode().zfill(6)} {entry_type} {sha_hex}    {name.decode()}")
-                    pos = null_pos + 1 + 20
 
     elif command == "write-tree":
-        tree = b""
-        for line in sys.stdin:
-            mode, name, sha = line.split()
-            mode = mode.encode()
-            name = name.encode()
-            sha = bytes.fromhex(sha)
-
-            tree += mode + b" " + name + b"\x00" + sha
-
-        sha = hashlib.sha1(tree).hexdigest()
-        os.makedirs(f".git/objects/{sha[:2]}", exist_ok=True)
-        with open(f".git/objects/{sha[:2]}/{sha[2:]}", "wb") as f:
-            f.write(zlib.compress(b"tree " + tree))
-
-        print(sha)
+        # Write tree starting from current directory
+        tree_sha = write_tree_recursive(".")
+        print(tree_sha)
 
     else:
         raise RuntimeError(f"Unknown command #{command}")
