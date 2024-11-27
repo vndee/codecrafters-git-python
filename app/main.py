@@ -52,28 +52,21 @@ def main():
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
-                # Split header from content
                 header_end = data.index(b'\x00')
                 header = data[:header_end]
                 content = data[header_end + 1:]
 
-                # Process each entry
                 pos = 0
                 entries = []
                 while pos < len(content):
-                    # Find the end of the mode+name portion (marked by null byte)
                     null_pos = content.index(b'\x00', pos)
 
-                    # Extract mode and name
                     mode_name = content[pos:null_pos]
                     mode, name = mode_name.split(b' ', 1)
 
-                    # Skip past the SHA (20 bytes) and prepare for next entry
                     pos = null_pos + 1 + 20
-
                     entries.append(name.decode())
 
-                # Print entries (they're already sorted in the tree object)
                 for entry in entries:
                     print(entry)
         else:
@@ -81,7 +74,6 @@ def main():
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
-                # Similar parsing logic but print full details
                 header_end = data.index(b'\x00')
                 content = data[header_end + 1:]
 
@@ -91,11 +83,9 @@ def main():
                     mode_name = content[pos:null_pos]
                     mode, name = mode_name.split(b' ', 1)
 
-                    # Get the SHA and convert to hex
                     sha_bytes = content[null_pos + 1:null_pos + 21]
                     sha_hex = sha_bytes.hex()
 
-                    # Determine if it's a tree or blob based on mode
                     entry_type = "tree" if mode == b"40000" else "blob"
 
                     print(f"{mode.decode().zfill(6)} {entry_type} {sha_hex}    {name.decode()}")
