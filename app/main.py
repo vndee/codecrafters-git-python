@@ -55,7 +55,7 @@ def main():
                 parts = data.split(b'\x00')
                 _type, _size = parts[0].decode().split(" ")
                 _content = b'\x00'.join(parts[1:])
-                print(_content)
+                print(_content.decode())
 
                 for line in _content.split("\n"):
                     if not line:
