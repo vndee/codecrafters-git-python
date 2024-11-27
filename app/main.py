@@ -26,7 +26,7 @@ def main():
             _content = parts[-1].decode()
 
             if sub_command == "-p":
-                print(_content)
+                print(_content, end="")
     else:
         raise RuntimeError(f"Unknown command #{command}")
 
