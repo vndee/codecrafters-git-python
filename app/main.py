@@ -20,8 +20,9 @@ def main():
         sha = sys.argv[3]
         with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
             data = zlib.decompress(f.read())
+
         if sub_command == "-p":
-            print(data.decode())
+            print(data)
     else:
         raise RuntimeError(f"Unknown command #{command}")
 
