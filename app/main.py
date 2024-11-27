@@ -53,6 +53,7 @@ def main():
                 data = zlib.decompress(f.read())
 
                 parts = data.split(b"\x00", 2)
+                print(parts)
                 _type, _size = parts[0].decode().split(" ")
                 _content = parts[-1].decode()
 
