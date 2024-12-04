@@ -2,6 +2,7 @@ import sys
 import os
 import zlib
 import time
+import struct
 import hashlib
 import requests
 from typing import List, Tuple, Dict
@@ -153,63 +154,163 @@ def get_refs(url: str) -> Tuple[Dict[str, bool | str], List[Tuple[str, str]]]:
 def download_packfile(url: str, want_ref: str) -> bytes:
     """Download a packfile using Git protocol v2."""
     url = f"{url}/git-upload-pack"
+
+    body = (
+            b"0011command=fetch0001000fno-progress"
+            + f"0032want {want_ref}\n".encode()
+            + b"0009done\n0000"
+    )
+
     headers = {
-        "Content-Type": "application/x-git-upload-pack-request"
+        "Git-Protocol": "version=2"
     }
-
-    # Format length-prefixed packets according to Git protocol
-    def format_pkt_line(line: str) -> bytes:
-        # +4 for the header length itself
-        length = len(line.encode()) + 4
-        return f"{length:04x}".encode() + line.encode()
-
-    # Build the request body with properly formatted packets
-    packets = [
-        format_pkt_line(f"want {want_ref}\n"),
-        b"0000",  # flush packet
-        format_pkt_line("done\n")
-    ]
-
-    body = b"".join(packets)
 
     response = requests.post(url, headers=headers, data=body)
     if response.status_code != 200:
         raise RuntimeError(f"Failed to fetch packfile: {response.status_code} - {response.text}")
 
-    # Print first few bytes for debugging
-    print(f"Response first 32 bytes: {response.content[:32]}")
+    # Parse the response into lines
+    data = response.content
+    pack_lines = []
 
-    # Look for PACK signature in response
-    pack_start = response.content.find(b'PACK')
-    if pack_start == -1:
-        raise RuntimeError("No packfile found in response")
+    while data:
+        # Read packet length (4 hex digits)
+        line_len = int(data[:4], 16)
+        if line_len == 0:
+            break
+        pack_lines.append(data[4:line_len])
+        data = data[line_len:]
 
-    return response.content[pack_start:]
+    # Combine all lines after the first one (skipping header)
+    # and remove the packet type byte from each line
+    return b"".join(l[1:] for l in pack_lines[1:])
 
 
 def write_packfile(data: bytes, target_dir: str) -> None:
     """Parse and write a packfile to the target directory."""
     git_dir = os.path.join(target_dir, ".git")
-    os.makedirs(os.path.join(git_dir, "objects", "pack"), exist_ok=True)
 
-    # For debugging
-    print(f"Packfile size: {len(data)} bytes")
-    print(f"First 32 bytes: {data[:32]}")
+    # Skip pack header and version (8 bytes)
+    data = data[8:]
 
-    if not data.startswith(b'PACK'):
-        raise RuntimeError("Invalid packfile signature")
+    # Read number of objects
+    n_objects = struct.unpack("!I", data[:4])[0]
+    data = data[4:]
 
-    # Parse packfile header
-    version = int.from_bytes(data[4:8], 'big')
-    num_objects = int.from_bytes(data[8:12], 'big')
+    print(f"Processing {n_objects} objects")
 
-    print(f"Processing packfile with {num_objects} objects (version {version})")
+    def next_size_type(bs: bytes) -> Tuple[str, int, bytes]:
+        """Parse the type and size of the next object."""
+        ty = (bs[0] & 0b01110000) >> 4
+        type_map = {
+            1: "commit",
+            2: "tree",
+            3: "blob",
+            4: "tag",
+            6: "ofs_delta",
+            7: "ref_delta"
+        }
+        ty = type_map.get(ty, "unknown")
 
-    # Write the packfile to disk
-    pack_name = hashlib.sha1(data).hexdigest()
-    pack_path = os.path.join(git_dir, "objects", "pack", f"pack-{pack_name}.pack")
-    with open(pack_path, 'wb') as f:
-        f.write(data)
+        size = bs[0] & 0b00001111
+        i = 1
+        shift = 4
+        while bs[i - 1] & 0b10000000:
+            size |= (bs[i] & 0b01111111) << shift
+            shift += 7
+            i += 1
+        return ty, size, bs[i:]
+
+    def next_size(bs: bytes) -> Tuple[int, bytes]:
+        """Parse just the size field."""
+        size = bs[0] & 0b01111111
+        i = 1
+        shift = 7
+        while bs[i - 1] & 0b10000000:
+            size |= (bs[i] & 0b01111111) << shift
+            shift += 7
+            i += 1
+        return size, bs[i:]
+
+    # Process each object in the pack
+    for _ in range(n_objects):
+        obj_type, _, data = next_size_type(data)
+
+        if obj_type in ["commit", "tree", "blob", "tag"]:
+            # Direct object - just decompress
+            decomp = zlib.decompressobj()
+            content = decomp.decompress(data)
+            data = decomp.unused_data
+
+            # Hash and store the object
+            store = f"{obj_type} {len(content)}\x00".encode() + content
+            sha = hashlib.sha1(store).hexdigest()
+
+            # Write to objects directory
+            path = os.path.join(git_dir, "objects", sha[:2])
+            os.makedirs(path, exist_ok=True)
+            with open(os.path.join(path, sha[2:]), "wb") as f:
+                f.write(zlib.compress(store))
+
+        elif obj_type == "ref_delta":
+            # Reference delta object
+            base_sha = data[:20].hex()
+            data = data[20:]
+
+            # Decompress delta data
+            decomp = zlib.decompressobj()
+            delta = decomp.decompress(data)
+            data = decomp.unused_data
+
+            # Read base object
+            with open(f"{git_dir}/objects/{base_sha[:2]}/{base_sha[2:]}", "rb") as f:
+                base_content = zlib.decompress(f.read())
+            base_type = base_content.split(b' ')[0].decode()
+            base_content = base_content.split(b'\x00', 1)[1]
+
+            # Skip size headers in delta
+            _, delta = next_size(delta)  # base size
+            _, delta = next_size(delta)  # target size
+
+            # Apply delta instructions
+            result = b""
+            while delta:
+                cmd = delta[0]
+                if cmd & 0b10000000:  # Copy command
+                    pos = 1
+                    offset = 0
+                    size = 0
+
+                    # Read offset
+                    for i in range(4):
+                        if cmd & (1 << i):
+                            offset |= delta[pos] << (i * 8)
+                            pos += 1
+
+                    # Read size
+                    for i in range(3):
+                        if cmd & (1 << (4 + i)):
+                            size |= delta[pos] << (i * 8)
+                            pos += 1
+
+                    result += base_content[offset:offset + size]
+                    delta = delta[pos:]
+                else:  # Insert command
+                    size = cmd
+                    result += delta[1:size + 1]
+                    delta = delta[size + 1:]
+
+            # Store the resulting object
+            store = f"{base_type} {len(result)}\x00".encode() + result
+            sha = hashlib.sha1(store).hexdigest()
+
+            path = os.path.join(git_dir, "objects", sha[:2])
+            os.makedirs(path, exist_ok=True)
+            with open(os.path.join(path, sha[2:]), "wb") as f:
+                f.write(zlib.compress(store))
+
+        else:
+            raise RuntimeError(f"Unsupported object type: {obj_type}")
 
 
 def main():
@@ -296,7 +397,6 @@ def main():
         print(commit_sha)
 
     elif command == "clone":
-        # Clone a repository
         remote = sys.argv[2]
         if len(sys.argv) == 4:
             local = sys.argv[3]
