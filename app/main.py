@@ -4,7 +4,7 @@ import zlib
 import time
 import struct
 import hashlib
-import requests
+import urllib.request
 from typing import List, Tuple, Dict
 from urllib.parse import urlparse
 
@@ -124,13 +124,11 @@ def convert_github_url(url: str) -> str:
 def get_refs(url: str) -> Tuple[Dict[str, bool | str], List[Tuple[str, str]]]:
     """Fetch refs using Smart HTTP protocol."""
     url = f"{url}/info/refs?service=git-upload-pack"
-    response = requests.get(url)
 
-    if response.status_code != 200:
-        raise RuntimeError(f"Failed to fetch refs: {response.text}")
-
+    req = urllib.request.Request(url)
     refs, caps = [], {}
-    lines = response.content.split(b"\n")
+    with urllib.request.urlopen(req) as response:
+        lines = response.read().split(b"\n")
 
     # parse capabilities
     cap_bytes = lines[1].split(b'\x00')[1]
@@ -155,6 +153,7 @@ def download_packfile(url: str, want_ref: str) -> bytes:
     """Download a packfile using Git protocol v2."""
     url = f"{url}/git-upload-pack"
 
+    # Create the request body with proper packet format
     body = (
             b"0011command=fetch0001000fno-progress"
             + f"0032want {want_ref}\n".encode()
@@ -162,15 +161,15 @@ def download_packfile(url: str, want_ref: str) -> bytes:
     )
 
     headers = {
+        "Content-Type": "application/x-git-upload-pack-request",
         "Git-Protocol": "version=2"
     }
 
-    response = requests.post(url, headers=headers, data=body)
-    if response.status_code != 200:
-        raise RuntimeError(f"Failed to fetch packfile: {response.status_code} - {response.text}")
+    req = urllib.request.Request(url, data=body, headers=headers)
+    with urllib.request.urlopen(req) as response:
+        data = response.read()
 
     # Parse the response into lines
-    data = response.content
     pack_lines = []
 
     while data:
