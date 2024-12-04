@@ -189,15 +189,6 @@ def write_packfile(data: bytes, target_dir: str) -> None:
     """Parse and write a packfile to the target directory."""
     git_dir = os.path.join(target_dir, ".git")
 
-    # Skip pack header and version (8 bytes)
-    data = data[8:]
-
-    # Read number of objects
-    n_objects = struct.unpack("!I", data[:4])[0]
-    data = data[4:]
-
-    print(f"Processing {n_objects} objects")
-
     def next_size_type(bs: bytes) -> Tuple[str, int, bytes]:
         """Parse the type and size of the next object."""
         ty = (bs[0] & 0b01110000) >> 4
@@ -231,17 +222,49 @@ def write_packfile(data: bytes, target_dir: str) -> None:
             i += 1
         return size, bs[i:]
 
-    # Process each object in the pack
+    # Skip pack header and version (8 bytes)
+    data = data[8:]
+
+    # Read number of objects
+    n_objects = struct.unpack("!I", data[:4])[0]
+    data = data[4:]
+
+    print(f"Processing {n_objects} objects")
+
+    # First pass: collect all objects and their data
+    objects = []  # List to store (type, content, base_sha) tuples
+    remaining_data = data
+
     for _ in range(n_objects):
-        obj_type, _, data = next_size_type(data)
+        obj_type, _, remaining_data = next_size_type(remaining_data)
 
         if obj_type in ["commit", "tree", "blob", "tag"]:
             # Direct object - just decompress
             decomp = zlib.decompressobj()
-            content = decomp.decompress(data)
-            data = decomp.unused_data
+            content = decomp.decompress(remaining_data)
+            remaining_data = decomp.unused_data
+            objects.append((obj_type, content, None))
 
-            # Hash and store the object
+        elif obj_type == "ref_delta":
+            # Reference delta object - store for second pass
+            base_sha = remaining_data[:20].hex()
+            remaining_data = remaining_data[20:]
+
+            # Decompress delta data
+            decomp = zlib.decompressobj()
+            delta = decomp.decompress(remaining_data)
+            remaining_data = decomp.unused_data
+
+            objects.append(("ref_delta", delta, base_sha))
+
+    # Second pass: process objects in order
+    processed_objects = set()  # Keep track of processed objects
+
+    def process_object(obj_data: Tuple[str, bytes, str | None]) -> None:
+        obj_type, content, base_sha = obj_data
+
+        if obj_type != "ref_delta":
+            # Direct object
             store = f"{obj_type} {len(content)}\x00".encode() + content
             sha = hashlib.sha1(store).hexdigest()
 
@@ -251,15 +274,18 @@ def write_packfile(data: bytes, target_dir: str) -> None:
             with open(os.path.join(path, sha[2:]), "wb") as f:
                 f.write(zlib.compress(store))
 
-        elif obj_type == "ref_delta":
-            # Reference delta object
-            base_sha = data[:20].hex()
-            data = data[20:]
+            processed_objects.add(sha)
+            return sha
 
-            # Decompress delta data
-            decomp = zlib.decompressobj()
-            delta = decomp.decompress(data)
-            data = decomp.unused_data
+        else:
+            # Delta object
+            if base_sha not in processed_objects:
+                # Find and process base object first
+                for obj in objects:
+                    if obj[0] != "ref_delta" and hashlib.sha1(
+                            f"{obj[0]} {len(obj[1])}\x00".encode() + obj[1]).hexdigest() == base_sha:
+                        process_object(obj)
+                        break
 
             # Read base object
             with open(f"{git_dir}/objects/{base_sha[:2]}/{base_sha[2:]}", "rb") as f:
@@ -268,6 +294,7 @@ def write_packfile(data: bytes, target_dir: str) -> None:
             base_content = base_content.split(b'\x00', 1)[1]
 
             # Skip size headers in delta
+            delta = content
             _, delta = next_size(delta)  # base size
             _, delta = next_size(delta)  # target size
 
@@ -308,8 +335,61 @@ def write_packfile(data: bytes, target_dir: str) -> None:
             with open(os.path.join(path, sha[2:]), "wb") as f:
                 f.write(zlib.compress(store))
 
+            processed_objects.add(sha)
+            return sha
+
+    # Process all objects
+    for obj in objects:
+        process_object(obj)
+
+
+def read_object(path: str, sha: str) -> Tuple[str, bytes]:
+    """Read a Git object and return its type and content."""
+    with open(f"{path}/.git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
+        data = zlib.decompress(f.read())
+
+    # Split into header and content
+    null_pos = data.index(b'\x00')
+    header = data[:null_pos]
+    content = data[null_pos + 1:]
+
+    # Parse type and size from header
+    obj_type = header.split(b' ')[0].decode()
+    return obj_type, content
+
+
+def render_tree(repo_path: str, dir_path: str, sha: str):
+    """
+    Recursively render a Git tree object to the filesystem.
+    """
+    print(f"Rendering tree {sha} to {dir_path}")
+    os.makedirs(dir_path, exist_ok=True)
+    _, tree_content = read_object(repo_path, sha)
+
+    # Process each entry in the tree
+    while tree_content:
+        # Split mode and remaining content
+        mode, tree_content = tree_content.split(b' ', 1)
+        # Split name and remaining content
+        name, tree_content = tree_content.split(b'\x00', 1)
+        # Get object SHA (next 20 bytes)
+        entry_sha = tree_content[:20].hex()
+        tree_content = tree_content[20:]
+
+        # Create full path for this entry
+        entry_path = os.path.join(dir_path, name.decode())
+
+        # Handle based on mode
+        if mode == b'40000':  # Directory
+            # Recursively render subtree
+            render_tree(repo_path, entry_path, entry_sha)
+        elif mode == b'100644':  # Regular file
+            # Read and write file content
+            _, content = read_object(repo_path, entry_sha)
+            with open(entry_path, 'wb') as f:
+                f.write(content)
         else:
-            raise RuntimeError(f"Unsupported object type: {obj_type}")
+            raise RuntimeError(f"Unsupported mode: {mode}")
 
 
 def main():
@@ -396,6 +476,7 @@ def main():
         print(commit_sha)
 
     elif command == "clone":
+        # Get repository URL and directory
         remote = sys.argv[2]
         if len(sys.argv) == 4:
             local = sys.argv[3]
@@ -403,13 +484,15 @@ def main():
             parsed = urlparse(remote)
             local = parsed.path.split("/")[-1].replace(".git", "")
 
-        if os.path.exists(local):
-            raise RuntimeError(f"Destination path already exists: {local}")
-
+        # Initialize repository
         os.makedirs(local)
+        os.makedirs(os.path.join(local, ".git", "objects"))
+        os.makedirs(os.path.join(local, ".git", "refs"))
+
         print(f"Cloning {remote} to {local}")
 
-        caps, refs = get_refs(convert_github_url(remote))
+        # Fetch refs
+        caps, refs = get_refs(remote)
         default_branch = caps.get("default_branch", "refs/heads/main")
 
         default_ref_sha = None
@@ -421,10 +504,27 @@ def main():
         if default_ref_sha is None:
             raise RuntimeError(f"Default branch not found: {default_branch}")
 
-        print(f"Downloading {default_branch} ({default_ref_sha}) to {local}")
-
+        # Download and process packfile
+        print(f"Downloading {default_branch} ({default_ref_sha})")
         packfile = download_packfile(remote, default_ref_sha)
         write_packfile(packfile, local)
+
+        # Write HEAD ref
+        with open(os.path.join(local, ".git", "HEAD"), "w") as f:
+            f.write(f"ref: {default_branch}\n")
+
+        # Write branch ref
+        ref_dir = os.path.join(local, ".git", os.path.dirname(default_branch))
+        os.makedirs(ref_dir, exist_ok=True)
+        with open(os.path.join(local, ".git", default_branch), "w") as f:
+            f.write(f"{default_ref_sha}\n")
+
+        # Read the commit and tree
+        _, commit_content = read_object(local, default_ref_sha)
+        tree_sha = commit_content[5:45].decode()  # Extract tree SHA from commit
+
+        # Render the tree to the working directory
+        render_tree(local, local, tree_sha)
 
     else:
         raise RuntimeError(f"Unknown command #{command}")
