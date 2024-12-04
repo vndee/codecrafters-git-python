@@ -338,7 +338,6 @@ def write_packfile(data: bytes, target_dir: str) -> None:
             processed_objects.add(sha)
             return sha
 
-    # Process all objects
     for obj in objects:
         process_object(obj)
 
