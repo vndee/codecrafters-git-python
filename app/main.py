@@ -3,7 +3,9 @@ import os
 import zlib
 import time
 import hashlib
-from typing import List, Tuple
+import requests
+from typing import List, Tuple, Dict
+from urllib.parse import urlparse
 
 
 def hash_object(data: bytes, obj_type: str) -> str:
@@ -107,9 +109,110 @@ def create_commit(tree_sha: str, parent_sha: str, message: str) -> str:
     return hash_object(commit_data, "commit")
 
 
-def main():
-    print("Logs from your program will appear here!", file=sys.stderr)
+def convert_github_url(url: str) -> str:
+    """Convert a GitHub URL to a Git URL."""
+    parsed = urlparse(url)
+    path = parsed.path
 
+    if not path.endswith(".git"):
+        path += ".git"
+
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
+def get_refs(url: str) -> Tuple[Dict[str, bool | str], List[Tuple[str, str]]]:
+    """Fetch refs using Smart HTTP protocol."""
+    url = f"{url}/info/refs?service=git-upload-pack"
+    response = requests.get(url)
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Failed to fetch refs: {response.text}")
+
+    refs, caps = [], {}
+    lines = response.content.split(b"\n")
+
+    # parse capabilities
+    cap_bytes = lines[1].split(b'\x00')[1]
+    for cap in cap_bytes.split(b' '):
+        if cap.startswith(b"symref=HEAD:"):
+            caps["default_branch"] = cap.split(b":")[1].decode()
+        else:
+            caps[cap.decode()] = True
+
+    # parse refs
+    for line in lines[2:]:
+        if line.startswith(b"0000"):
+            break
+
+        sha, ref_name = line.decode().split(" ")  # each ref line is formatted as: "<sha>\x00ref_name"
+        refs.append((sha[4:], ref_name))  # remove the length prefix that git uses
+
+    return caps, refs
+
+
+def download_packfile(url: str, want_ref: str) -> bytes:
+    """Download a packfile using Git protocol v2."""
+    url = f"{url}/git-upload-pack"
+    headers = {
+        "Content-Type": "application/x-git-upload-pack-request"
+    }
+
+    # Format length-prefixed packets according to Git protocol
+    def format_pkt_line(line: str) -> bytes:
+        # +4 for the header length itself
+        length = len(line.encode()) + 4
+        return f"{length:04x}".encode() + line.encode()
+
+    # Build the request body with properly formatted packets
+    packets = [
+        format_pkt_line(f"want {want_ref}\n"),
+        b"0000",  # flush packet
+        format_pkt_line("done\n")
+    ]
+
+    body = b"".join(packets)
+
+    response = requests.post(url, headers=headers, data=body)
+    if response.status_code != 200:
+        raise RuntimeError(f"Failed to fetch packfile: {response.status_code} - {response.text}")
+
+    # Print first few bytes for debugging
+    print(f"Response first 32 bytes: {response.content[:32]}")
+
+    # Look for PACK signature in response
+    pack_start = response.content.find(b'PACK')
+    if pack_start == -1:
+        raise RuntimeError("No packfile found in response")
+
+    return response.content[pack_start:]
+
+
+def write_packfile(data: bytes, target_dir: str) -> None:
+    """Parse and write a packfile to the target directory."""
+    git_dir = os.path.join(target_dir, ".git")
+    os.makedirs(os.path.join(git_dir, "objects", "pack"), exist_ok=True)
+
+    # For debugging
+    print(f"Packfile size: {len(data)} bytes")
+    print(f"First 32 bytes: {data[:32]}")
+
+    if not data.startswith(b'PACK'):
+        raise RuntimeError("Invalid packfile signature")
+
+    # Parse packfile header
+    version = int.from_bytes(data[4:8], 'big')
+    num_objects = int.from_bytes(data[8:12], 'big')
+
+    print(f"Processing packfile with {num_objects} objects (version {version})")
+
+    # Write the packfile to disk
+    pack_name = hashlib.sha1(data).hexdigest()
+    pack_path = os.path.join(git_dir, "objects", "pack", f"pack-{pack_name}.pack")
+    with open(pack_path, 'wb') as f:
+        f.write(data)
+
+
+def main():
     command = sys.argv[1]
     if command == "init":
         os.mkdir(".git")
@@ -148,11 +251,9 @@ def main():
             with open(f".git/objects/{sha[:2]}/{sha[2:]}", "rb") as f:
                 data = zlib.decompress(f.read())
 
-                # Split header from content
                 header_end = data.index(b'\x00')
                 content = data[header_end + 1:]
 
-                # Process each entry
                 pos = 0
                 entries = []
                 while pos < len(content):
@@ -193,6 +294,38 @@ def main():
 
         commit_sha = create_commit(tree_sha, parent_sha, message)
         print(commit_sha)
+
+    elif command == "clone":
+        # Clone a repository
+        remote = sys.argv[2]
+        if len(sys.argv) == 4:
+            local = sys.argv[3]
+        else:
+            parsed = urlparse(remote)
+            local = parsed.path.split("/")[-1].replace(".git", "")
+
+        if os.path.exists(local):
+            raise RuntimeError(f"Destination path already exists: {local}")
+
+        os.makedirs(local)
+        print(f"Cloning {remote} to {local}")
+
+        caps, refs = get_refs(convert_github_url(remote))
+        default_branch = caps.get("default_branch", "refs/heads/main")
+
+        default_ref_sha = None
+        for sha, ref in refs:
+            if ref == default_branch:
+                default_ref_sha = sha
+                break
+
+        if default_ref_sha is None:
+            raise RuntimeError(f"Default branch not found: {default_branch}")
+
+        print(f"Downloading {default_branch} ({default_ref_sha})")
+
+        packfile = download_packfile(remote, default_ref_sha)
+        write_packfile(packfile, local)
 
     else:
         raise RuntimeError(f"Unknown command #{command}")
