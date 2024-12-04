@@ -421,7 +421,7 @@ def main():
         if default_ref_sha is None:
             raise RuntimeError(f"Default branch not found: {default_branch}")
 
-        print(f"Downloading {default_branch} ({default_ref_sha})")
+        print(f"Downloading {default_branch} ({default_ref_sha}) to {local}")
 
         packfile = download_packfile(remote, default_ref_sha)
         write_packfile(packfile, local)
